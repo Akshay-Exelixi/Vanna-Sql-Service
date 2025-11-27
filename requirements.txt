@@ -1,0 +1,24 @@
+# Vanna SQL Service Dependencies
+
+# Web Framework
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+
+# Database
+asyncpg
+psycopg2-binary
+
+# AI/ML - Vanna 2.0.1 (latest stable)
+# Important: Install vanna directly to venv site-packages to ensure correct version
+# pip install --target=".venv/Lib/site-packages" vanna==2.0.1 --force-reinstall --no-deps --upgrade
+vanna==2.0.1
+openai
+qdrant-client>=1.16.0  # Requires query_points method (1.8.0+)
+
+
+# Utilities
+httpx
+pyyaml
+python-dotenv

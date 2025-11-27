@@ -1,0 +1,668 @@
+# HRMS Schema Training Configuration
+# This file defines the database schema and example queries for Vanna AI training
+# Version: 1.0.0
+
+schema:
+  name: hrms
+  version: "1.0.0"
+  description: "Human Resource Management System database schema for leave management"
+  database_schema: public
+
+tables:
+  # Transaction table for leave requests (NOTE: prefix 'tr_' indicates transaction table)
+  - name: tr_leaves
+    description: "Leave requests and approvals - main transaction table for leave management"
+    discovery: true  # Auto-discover DDL from database
+    notes: |
+      IMPORTANT: Leave requests are stored in 'tr_leaves' table (NOT 'leaves')
+      - Status values: 'pending', 'approved', 'rejected', 'cancelled'
+      - Always calculate 'days' as (end_date - start_date + 1) for leave duration
+      - Use RETURNING * for INSERT/UPDATE operations to get the affected rows
+    columns:
+      id:
+        description: "Auto-increment primary key"
+        type: serial
+      employee_id:
+        description: "Employee requesting leave"
+        type: uuid
+        is_foreign_key: true
+        references: employees.id
+      start_date:
+        description: "Leave start date"
+        type: date
+      end_date:
+        description: "Leave end date"
+        type: date
+      days:
+        description: "Number of leave days (calculated as end_date - start_date + 1)"
+        type: integer
+      status:
+        description: "Current approval status"
+        type: varchar
+        allowed_values: [pending, approved, rejected, cancelled]
+      leave_type_id:
+        description: "Type of leave (sick, vacation, etc.)"
+        type: integer
+        is_foreign_key: true
+        references: leave_types.id
+      approved_by:
+        description: "Manager who approved/rejected the leave"
+        type: uuid
+        is_foreign_key: true
+        references: employees.id
+      reason:
+        description: "Reason for leave request"
+        type: text
+      file_path:
+        description: "Path to supporting documents (medical certificate, etc.)"
+        type: varchar
+
+  # Employee master data
+  - name: employees
+    description: "Employee master data - contains all employee information"
+    discovery: true
+    notes: |
+      - Employee IDs are UUID type, use ::uuid cast when inserting/querying
+      - Status: 'active' or 'inactive'
+      - Always filter by status = 'active' for current employees
+    columns:
+      id:
+        description: "UUID primary key"
+        type: uuid
+      first_name:
+        description: "Employee first name"
+        type: varchar
+      last_name:
+        description: "Employee last name"
+        type: varchar
+      email:
+        description: "Employee email address (unique)"
+        type: varchar
+      position:
+        description: "Job title/position"
+        type: varchar
+      status:
+        description: "Employment status"
+        type: varchar
+        allowed_values: [active, inactive]
+      department_id:
+        description: "Department the employee belongs to"
+        type: integer
+        is_foreign_key: true
+        references: departments.id
+      role_id:
+        description: "Role assigned to employee"
+        type: integer
+        is_foreign_key: true
+        references: roles.id
+      manager_id:
+        description: "Direct manager (self-referencing)"
+        type: uuid
+        is_foreign_key: true
+        references: employees.id
+      hire_date:
+        description: "Date when employee was hired"
+        type: date
+      salary:
+        description: "Employee salary"
+        type: decimal
+
+  # Role definitions
+  - name: roles
+    description: "Role definitions with access levels"
+    discovery: true
+    notes: |
+      - Role level determines permissions (higher = more access)
+      - Levels: 0=basic, 1=staff, 2=supervisor, 3=manager, 4=hr, 5=admin
+    columns:
+      id:
+        description: "Auto-increment primary key"
+        type: serial
+      name:
+        description: "Role name (e.g., Employee, Manager, HR Admin)"
+        type: varchar
+      level:
+        description: "Access level (0-5)"
+        type: integer
+      description:
+        description: "Role description"
+        type: text
+
+  # Leave type configuration
+  - name: leave_types
+    description: "Leave type configuration - defines types of leaves and their policies"
+    discovery: true
+    notes: |
+      - days_allowed: Annual quota for this leave type
+      - requires_approval: Whether manager approval is needed
+    columns:
+      id:
+        description: "Auto-increment primary key"
+        type: serial
+      name:
+        description: "Leave type name (e.g., Sick Leave, Annual Leave)"
+        type: varchar
+      days_allowed:
+        description: "Maximum days allowed per year"
+        type: integer
+      requires_approval:
+        description: "Whether this leave type requires approval"
+        type: boolean
+      description:
+        description: "Leave type description"
+        type: text
+
+  # Department structure
+  - name: departments
+    description: "Organization department structure"
+    discovery: true
+    columns:
+      id:
+        description: "Auto-increment primary key"
+        type: serial
+      name:
+        description: "Department name"
+        type: varchar
+      description:
+        description: "Department description"
+        type: text
+
+  # Permission definitions
+  - name: permissions
+    description: "Permission definitions for role-based access control"
+    discovery: true
+    notes: |
+      - Defines granular permissions that can be assigned to roles
+      - resource: The resource being accessed (e.g., 'leaves', 'employees')
+      - action: The action being performed (e.g., 'read', 'create', 'update', 'delete', 'approve')
+    columns:
+      id:
+        description: "UUID primary key"
+        type: uuid
+      name:
+        description: "Permission name (e.g., 'view_own_leaves', 'approve_leaves')"
+        type: varchar
+      description:
+        description: "Permission description"
+        type: text
+      resource:
+        description: "Resource this permission applies to"
+        type: varchar
+      action:
+        description: "Action this permission allows"
+        type: varchar
+      created_at:
+        description: "When permission was created"
+        type: timestamp
+      updated_at:
+        description: "When permission was last updated"
+        type: timestamp
+
+  # Role-Permission mapping
+  - name: tr_role_permissions
+    description: "Junction table mapping roles to permissions"
+    discovery: true
+    notes: |
+      - Many-to-many relationship between roles and permissions
+      - Defines which permissions each role has
+      - Use this to check if a role has a specific permission
+    columns:
+      role_id:
+        description: "Role UUID"
+        type: uuid
+        is_foreign_key: true
+        references: roles.id
+      permission_id:
+        description: "Permission UUID"
+        type: uuid
+        is_foreign_key: true
+        references: permissions.id
+      created_at:
+        description: "When this permission was granted to the role"
+        type: timestamp
+
+examples:
+  # Leave counting and status queries
+  - question: "How many pending leaves are there?"
+    sql: "SELECT COUNT(*) as pending_count FROM tr_leaves WHERE status = 'pending';"
+    category: leaves
+    description: "Count pending leave requests"
+
+  - question: "How many leaves were approved this month?"
+    sql: |
+      SELECT COUNT(*) as approved_count 
+      FROM tr_leaves 
+      WHERE status = 'approved' 
+      AND EXTRACT(MONTH FROM start_date) = EXTRACT(MONTH FROM CURRENT_DATE)
+      AND EXTRACT(YEAR FROM start_date) = EXTRACT(YEAR FROM CURRENT_DATE);
+    category: analytics
+
+  - question: "Count leaves by status"
+    sql: "SELECT status, COUNT(*) as count FROM tr_leaves GROUP BY status ORDER BY count DESC;"
+    category: analytics
+
+  # Leave listing queries
+  - question: "Show all pending leave requests"
+    sql: |
+      SELECT l.id, e.first_name, e.last_name, lt.name as leave_type, 
+             l.start_date, l.end_date, l.days, l.status, l.reason
+      FROM tr_leaves l
+      JOIN employees e ON l.employee_id = e.id
+      LEFT JOIN leave_types lt ON l.leave_type_id = lt.id
+      WHERE l.status = 'pending'
+      ORDER BY l.created_at DESC;
+    category: leaves
+    description: "List all pending leave requests with employee details"
+
+  - question: "Show approved leaves this month"
+    sql: |
+      SELECT l.id, e.first_name, e.last_name, lt.name as leave_type,
+             l.start_date, l.end_date, l.days
+      FROM tr_leaves l
+      JOIN employees e ON l.employee_id = e.id
+      LEFT JOIN leave_types lt ON l.leave_type_id = lt.id
+      WHERE l.status = 'approved'
+      AND EXTRACT(MONTH FROM l.start_date) = EXTRACT(MONTH FROM CURRENT_DATE)
+      ORDER BY l.start_date;
+    category: leaves
+
+  - question: "Show leaves for a specific employee"
+    sql: |
+      SELECT l.id, lt.name as leave_type, l.start_date, l.end_date, 
+             l.days, l.status, l.reason
+      FROM tr_leaves l
+      LEFT JOIN leave_types lt ON l.leave_type_id = lt.id
+      WHERE l.employee_id = $1::uuid
+      ORDER BY l.start_date DESC;
+    category: leaves
+    description: "Get all leaves for a specific employee by ID"
+
+  # Leave balance queries
+  - question: "Get leave balance for an employee"
+    sql: |
+      SELECT 
+        lt.name as leave_type,
+        lt.days_allowed,
+        COALESCE(SUM(l.days), 0) as days_taken,
+        lt.days_allowed - COALESCE(SUM(l.days), 0) as balance
+      FROM leave_types lt
+      LEFT JOIN tr_leaves l ON lt.id = l.leave_type_id 
+        AND l.employee_id = $1::uuid 
+        AND l.status = 'approved'
+        AND EXTRACT(YEAR FROM l.start_date) = EXTRACT(YEAR FROM CURRENT_DATE)
+      GROUP BY lt.id, lt.name, lt.days_allowed;
+    category: leaves
+    description: "Calculate remaining leave balance per leave type"
+
+  # Insert/Update operations
+  - question: "Insert a new leave request"
+    sql: |
+      INSERT INTO tr_leaves (employee_id, start_date, end_date, days, status, leave_type_id, reason)
+      VALUES ($1::uuid, $2::date, $3::date, ($3::date - $2::date + 1), 'pending', $4, $5)
+      RETURNING *;
+    category: write
+    description: "Create new leave request - days auto-calculated"
+
+  - question: "Approve a leave request"
+    sql: |
+      UPDATE tr_leaves 
+      SET status = 'approved', approved_by = $2::uuid, updated_at = CURRENT_TIMESTAMP 
+      WHERE id = $1 AND status = 'pending'
+      RETURNING *;
+    category: write
+    description: "Approve a pending leave request"
+
+  - question: "Reject a leave request"
+    sql: |
+      UPDATE tr_leaves 
+      SET status = 'rejected', approved_by = $2::uuid, updated_at = CURRENT_TIMESTAMP 
+      WHERE id = $1 AND status = 'pending'
+      RETURNING *;
+    category: write
+
+  # Employee queries
+  - question: "Get all employees with their roles and departments"
+    sql: |
+      SELECT e.id, e.first_name, e.last_name, e.email, e.position,
+        r.name as role_name, d.name as department_name
+      FROM employees e
+      LEFT JOIN roles r ON e.role_id = r.id
+      LEFT JOIN departments d ON e.department_id = d.id
+      WHERE e.status = 'active'
+      ORDER BY e.first_name;
+    category: employees
+
+  - question: "Find employees by department"
+    sql: |
+      SELECT e.id, e.first_name, e.last_name, e.email, e.position
+      FROM employees e
+      JOIN departments d ON e.department_id = d.id
+      WHERE d.name ILIKE $1
+      AND e.status = 'active'
+      ORDER BY e.first_name;
+    category: employees
+
+  - question: "Get employee count by department"
+    sql: |
+      SELECT d.name as department, COUNT(e.id) as employee_count
+      FROM departments d
+      LEFT JOIN employees e ON d.id = e.department_id AND e.status = 'active'
+      GROUP BY d.id, d.name
+      ORDER BY employee_count DESC;
+    category: analytics
+
+  # Leave analytics
+  - question: "Get leave summary by department"
+    sql: |
+      SELECT d.name as department,
+        COUNT(CASE WHEN l.status = 'pending' THEN 1 END) as pending,
+        COUNT(CASE WHEN l.status = 'approved' THEN 1 END) as approved,
+        COUNT(CASE WHEN l.status = 'rejected' THEN 1 END) as rejected
+      FROM departments d
+      LEFT JOIN employees e ON d.id = e.department_id
+      LEFT JOIN tr_leaves l ON e.id = l.employee_id
+      GROUP BY d.id, d.name
+      ORDER BY d.name;
+    category: analytics
+
+  - question: "Get most common leave types"
+    sql: |
+      SELECT lt.name as leave_type, COUNT(l.id) as count
+      FROM leave_types lt
+      LEFT JOIN tr_leaves l ON lt.id = l.leave_type_id
+      GROUP BY lt.id, lt.name
+      ORDER BY count DESC;
+    category: analytics
+
+  # User-specific queries (use $CURRENT_USER_ID placeholder)
+  - question: "Show my pending leave requests"
+    sql: |
+      SELECT l.id, lt.name as leave_type, l.start_date, l.end_date, 
+             l.days, l.status, l.reason, l.created_at
+      FROM tr_leaves l
+      LEFT JOIN leave_types lt ON l.leave_type_id = lt.id
+      WHERE l.employee_id = $CURRENT_USER_ID::uuid
+      AND l.status = 'pending'
+      ORDER BY l.created_at DESC;
+    category: user_specific
+    description: "Get current user's pending leave requests"
+
+  - question: "Show all my leave requests"
+    sql: |
+      SELECT l.id, lt.name as leave_type, l.start_date, l.end_date, 
+             l.days, l.status, l.reason, l.created_at
+      FROM tr_leaves l
+      LEFT JOIN leave_types lt ON l.leave_type_id = lt.id
+      WHERE l.employee_id = $CURRENT_USER_ID::uuid
+      ORDER BY l.created_at DESC;
+    category: user_specific
+    description: "Get all leave requests for current user"
+
+  - question: "Show my approved leaves this year"
+    sql: |
+      SELECT l.id, lt.name as leave_type, l.start_date, l.end_date, l.days
+      FROM tr_leaves l
+      LEFT JOIN leave_types lt ON l.leave_type_id = lt.id
+      WHERE l.employee_id = $CURRENT_USER_ID::uuid
+      AND l.status = 'approved'
+      AND EXTRACT(YEAR FROM l.start_date) = EXTRACT(YEAR FROM CURRENT_DATE)
+      ORDER BY l.start_date DESC;
+    category: user_specific
+
+  - question: "How many pending leaves do I have?"
+    sql: |
+      SELECT COUNT(*) as my_pending_count 
+      FROM tr_leaves 
+      WHERE employee_id = $CURRENT_USER_ID::uuid 
+      AND status = 'pending';
+    category: user_specific
+
+  # Manager-specific queries (use $TEAM_MEMBER_IDS placeholder)
+  - question: "Show leave requests I need to approve"
+    sql: |
+      SELECT l.id, e.first_name, e.last_name, lt.name as leave_type,
+             l.start_date, l.end_date, l.days, l.reason, l.created_at
+      FROM tr_leaves l
+      JOIN employees e ON l.employee_id = e.id
+      LEFT JOIN leave_types lt ON l.leave_type_id = lt.id
+      WHERE e.manager_id = $CURRENT_USER_ID::uuid
+      AND l.status = 'pending'
+      ORDER BY l.created_at DESC;
+    category: manager
+    description: "Get pending leave requests from direct reports"
+
+  - question: "Show my team's pending leaves"
+    sql: |
+      SELECT l.id, e.first_name, e.last_name, lt.name as leave_type,
+             l.start_date, l.end_date, l.days, l.status
+      FROM tr_leaves l
+      JOIN employees e ON l.employee_id = e.id
+      LEFT JOIN leave_types lt ON l.leave_type_id = lt.id
+      WHERE e.manager_id = $CURRENT_USER_ID::uuid
+      AND l.status = 'pending'
+      ORDER BY l.created_at DESC;
+    category: manager
+
+  - question: "Show all my team's leaves"
+    sql: |
+      SELECT l.id, e.first_name, e.last_name, lt.name as leave_type,
+             l.start_date, l.end_date, l.days, l.status
+      FROM tr_leaves l
+      JOIN employees e ON l.employee_id = e.id
+      LEFT JOIN leave_types lt ON l.leave_type_id = lt.id
+      WHERE e.manager_id = $CURRENT_USER_ID::uuid
+      ORDER BY l.created_at DESC;
+    category: manager
+
+  - question: "How many pending approvals do I have?"
+    sql: |
+      SELECT COUNT(*) as pending_approvals
+      FROM tr_leaves l
+      JOIN employees e ON l.employee_id = e.id
+      WHERE e.manager_id = $CURRENT_USER_ID::uuid
+      AND l.status = 'pending';
+    category: manager
+
+  - question: "Show leaves I have approved"
+    sql: |
+      SELECT l.id, e.first_name, e.last_name, lt.name as leave_type,
+             l.start_date, l.end_date, l.days, l.created_at
+      FROM tr_leaves l
+      JOIN employees e ON l.employee_id = e.id
+      LEFT JOIN leave_types lt ON l.leave_type_id = lt.id
+      WHERE l.approved_by = $CURRENT_USER_ID::uuid
+      AND l.status = 'approved'
+      ORDER BY l.updated_at DESC;
+    category: manager
+
+  # Role and Permission queries
+  - question: "Get all permissions for a role"
+    sql: |
+      SELECT p.name, p.description, p.resource, p.action
+      FROM permissions p
+      JOIN tr_role_permissions rp ON p.id = rp.permission_id
+      WHERE rp.role_id = $1::uuid
+      ORDER BY p.resource, p.action;
+    category: roles
+    description: "List all permissions assigned to a specific role"
+
+  - question: "Check if a role has a specific permission"
+    sql: |
+      SELECT EXISTS (
+        SELECT 1 FROM tr_role_permissions rp
+        JOIN permissions p ON rp.permission_id = p.id
+        WHERE rp.role_id = $1::uuid AND p.name = $2
+      ) as has_permission;
+    category: roles
+
+  - question: "Get all roles with their permission counts"
+    sql: |
+      SELECT r.name as role_name, r.level, 
+             COUNT(rp.permission_id) as permission_count
+      FROM roles r
+      LEFT JOIN tr_role_permissions rp ON r.id = rp.role_id
+      GROUP BY r.id, r.name, r.level
+      ORDER BY r.level DESC;
+    category: analytics
+
+  - question: "List all permissions by resource"
+    sql: |
+      SELECT resource, 
+             COUNT(*) as permission_count,
+             STRING_AGG(action, ', ') as actions
+      FROM permissions
+      GROUP BY resource
+      ORDER BY resource;
+    category: roles
+
+  - question: "Get user's permissions through their role"
+    sql: |
+      SELECT DISTINCT p.name, p.description, p.resource, p.action
+      FROM employees e
+      JOIN roles r ON e.role_id = r.id
+      JOIN tr_role_permissions rp ON r.id = rp.role_id
+      JOIN permissions p ON rp.permission_id = p.id
+      WHERE e.id = $1::uuid
+      ORDER BY p.resource, p.action;
+    category: roles
+    description: "Get all permissions for a specific employee via their role"
+
+documentation:
+  - topic: "Schema Overview"
+    content: |
+      HRMS Database Schema Overview:
+      
+      1. CRITICAL: Leave requests are stored in 'tr_leaves' table (NOT 'leaves')
+         - The 'tr_' prefix indicates a transaction/transactional table
+      
+      2. Primary Tables:
+         - tr_leaves: Leave requests and approvals
+         - employees: Employee master data (UUID primary key)
+         - roles: Role definitions with access levels
+         - leave_types: Leave type configuration
+         - departments: Organization structure
+      
+      3. Key Relationships:
+         - tr_leaves.employee_id → employees.id
+         - tr_leaves.leave_type_id → leave_types.id
+         - tr_leaves.approved_by → employees.id
+         - employees.department_id → departments.id
+         - employees.role_id → roles.id
+         - employees.manager_id → employees.id (self-reference)
+
+  - topic: "UUID Handling"
+    content: |
+      Employee IDs are UUID type. When querying or inserting:
+      - Use ::uuid cast: WHERE employee_id = $1::uuid
+      - For INSERT: VALUES ($1::uuid, ...)
+      - Never use integer operations on UUID columns
+
+  - topic: "Status Values"
+    content: |
+      Leave status values:
+      - 'pending': Awaiting approval
+      - 'approved': Approved by manager
+      - 'rejected': Rejected by manager
+      - 'cancelled': Cancelled by employee
+      
+      Employee status values:
+      - 'active': Currently employed
+      - 'inactive': No longer employed
+
+  - topic: "Best Practices"
+    content: |
+      SQL Generation Best Practices:
+      1. Always use tr_leaves (not leaves) for leave queries
+      2. Filter by status = 'active' for employee queries
+      3. Use RETURNING * for INSERT/UPDATE to get affected rows
+      4. Calculate days as (end_date - start_date + 1)
+      5. Use LEFT JOIN for optional relationships
+      6. Use ILIKE for case-insensitive text search
+      7. Use EXTRACT(YEAR/MONTH FROM date) for date filtering
+
+  - topic: "User-Aware Queries"
+    content: |
+      Automatic User Context Filtering:
+      
+      When generating SQL, consider the current user's context for personalized queries:
+      
+      1. Personal Queries (use employee_id filter):
+         - "my leaves", "my pending requests" → WHERE employee_id = $CURRENT_USER_ID
+         - Always filter by the authenticated user's employee_id
+      
+      2. Manager Queries (use manager_id filter):
+         - "leaves I need to approve", "my team's leaves" → WHERE e.manager_id = $CURRENT_USER_ID
+         - "leaves I approved" → WHERE approved_by = $CURRENT_USER_ID
+         - Managers can see their direct reports' leaves
+      
+      3. Role-Based Access:
+         - Regular employees: Only see their own leaves
+         - Managers: See own leaves + team members' leaves
+         - HR/Admin: See all leaves in department or organization
+      
+      4. Context Variables:
+         - $CURRENT_USER_ID: The authenticated user's employee UUID
+         - Use this placeholder in WHERE clauses for user-specific filtering
+      
+      5. Query Patterns:
+         - "Show my X" → Filter by employee_id = $CURRENT_USER_ID
+         - "Show X I need to approve" → Filter by manager_id = $CURRENT_USER_ID AND status = 'pending'
+         - "Show my team's X" → Filter by manager_id = $CURRENT_USER_ID
+         - "Show X I approved" → Filter by approved_by = $CURRENT_USER_ID
+
+relationships:
+  - from_table: tr_leaves
+    to_table: employees
+    from_column: employee_id
+    to_column: id
+    relationship_type: many-to-one
+    description: "Each leave request belongs to one employee"
+
+  - from_table: tr_leaves
+    to_table: leave_types
+    from_column: leave_type_id
+    to_column: id
+    relationship_type: many-to-one
+    description: "Each leave request has one leave type"
+
+  - from_table: tr_leaves
+    to_table: employees
+    from_column: approved_by
+    to_column: id
+    relationship_type: many-to-one
+    description: "Each leave can be approved/rejected by one manager"
+
+  - from_table: employees
+    to_table: departments
+    from_column: department_id
+    to_column: id
+    relationship_type: many-to-one
+    description: "Each employee belongs to one department"
+
+  - from_table: employees
+    to_table: roles
+    from_column: role_id
+    to_column: id
+    relationship_type: many-to-one
+    description: "Each employee has one role"
+
+  - from_table: employees
+    to_table: employees
+    from_column: manager_id
+    to_column: id
+    relationship_type: many-to-one
+    description: "Each employee can have one manager (self-reference)"
+
+  - from_table: tr_role_permissions
+    to_table: roles
+    from_column: role_id
+    to_column: id
+    relationship_type: many-to-one
+    description: "Each role-permission mapping belongs to one role"
+
+  - from_table: tr_role_permissions
+    to_table: permissions
+    from_column: permission_id
+    to_column: id
+    relationship_type: many-to-one
+    description: "Each role-permission mapping references one permission"
