@@ -52,6 +52,22 @@ User context automatically filters queries:
 - **HR/Admin**: Full access (`role_level >= 4`)
 - Implemented via `DatabaseUserResolver.resolve_user()` which populates `User.metadata` with access lists
 
+### 5. SQL Security Validation
+`app/services/sql_validator.py` provides comprehensive security:
+- **Role-based access control**: Level 1-2 (employee/team_lead) must have employee_id filter for sensitive tables
+- **SQL injection detection**: Blocks stacked queries, comment injection, UNION attacks, hex encoding, DoS functions
+- **Placeholder replacement**: Programmatically replaces `$CURRENT_USER_ID`, `$TEAM_MEMBER_IDS`, etc. with actual values
+- **Response metadata**: Returns `security_validated`, `role_level`, `validation_warnings` in API response
+
+**Role Levels:**
+| Level | Role | Access |
+|-------|------|--------|
+| 1 | Employee | Own data only (requires employee_id filter) |
+| 2 | Team Lead | Own data only (requires employee_id filter) |
+| 3 | Manager | Team data (can query by manager_id) |
+| 4 | HR | Full access |
+| 5 | Admin | Full access |
+
 ## Development Workflows
 
 ### Local Development
@@ -140,9 +156,11 @@ Edit `app/services/vanna_service.py`:
 - **SQL generation errors**: Check Qdrant has trained examples (`curl http://localhost:6333/dashboard`)
 - **User resolution fails**: Ensure `employees` and `roles` tables exist with expected schema
 - **Query timeout**: Adjust `QUERY_TIMEOUT` in settings.py (default 30s)
+- **Security validation failures**: Check `validation_errors` in response metadata for details
 
 ## Files to Reference
 - `app/services/vanna_service.py` (lines 1-300): Agent initialization, user resolution, training logic
+- `app/services/sql_validator.py`: SQL security validation with RBAC and injection detection
 - `app/schemas/hrms.yaml`: Complete YAML schema config example
 - `README.md`: Full API documentation with example requests
 - `docker-compose.yml`: Environment variables and service configuration

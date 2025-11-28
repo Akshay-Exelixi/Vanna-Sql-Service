@@ -20,12 +20,15 @@ COPY app/ ./app/
 # Create schemas directory if not exists
 RUN mkdir -p ./app/schemas
 
-# Expose port
-EXPOSE 8010
+# Expose port (configurable via PORT env var, default 2011)
+EXPOSE 2011
 
-# Health check
+# Install curl for healthcheck
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+
+# Health check (uses PORT env var)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD python -c "import httpx; httpx.get('http://localhost:8010/health')" || exit 1
+    CMD curl -f http://localhost:${PORT:-2011}/health || exit 1
 
-# Run the application
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8010", "--log-level", "info"]
+# Run the application (PORT is set via environment variable)
+CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-2011} --log-level info

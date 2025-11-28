@@ -74,6 +74,61 @@ class DatabaseManager:
             logger.error(f"Query execution failed: {e}")
             raise
     
+    async def execute_multiple_queries(
+        self,
+        sql_statements: List[str],
+        max_rows: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Execute multiple SQL statements and return results for each.
+        
+        Args:
+            sql_statements: List of SQL statements to execute
+            max_rows: Maximum rows per query result
+            
+        Returns:
+            List of result objects, one per query
+        """
+        results = []
+        
+        async with self.pool.acquire() as conn:
+            for idx, sql in enumerate(sql_statements):
+                sql = sql.strip()
+                if not sql:
+                    continue
+                    
+                query_result = {
+                    "query_index": idx,
+                    "sql": sql,
+                    "success": False,
+                    "rows": [],
+                    "row_count": 0,
+                    "error": None
+                }
+                
+                try:
+                    # Apply row limit if specified
+                    if max_rows:
+                        sql = self._add_limit_clause(sql, max_rows)
+                    
+                    # Execute query
+                    rows = await conn.fetch(sql)
+                    
+                    # Convert to list of dicts
+                    query_result["rows"] = [dict(row) for row in rows]
+                    query_result["row_count"] = len(query_result["rows"])
+                    query_result["success"] = True
+                    
+                    logger.info(f"Query {idx+1} executed successfully. Rows: {query_result['row_count']}")
+                    
+                except Exception as e:
+                    logger.error(f"Query {idx+1} execution failed: {e}")
+                    query_result["error"] = str(e)
+                
+                results.append(query_result)
+        
+        return results
+    
     async def execute_write_query(
         self,
         sql: str

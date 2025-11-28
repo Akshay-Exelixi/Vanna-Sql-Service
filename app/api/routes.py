@@ -71,25 +71,41 @@ async def generate_sql(request: SQLGenerationRequest):
             )
         
         if result['success']:
+            # Merge service metadata with request context
+            service_metadata = result.get('metadata', {})
+            merged_metadata = {
+                **service_metadata,  # Include security validation metadata
+                "operation": result.get('operation'),
+                "rows_affected": result.get('rows_affected'),
+                "context": request.context,
+                "requested_role": request.role  # Role passed in request (may differ from resolved)
+            }
+            
             return SQLGenerationResponse(
                 success=True,
                 sql=result.get('sql'),
                 results=result.get('results'),
                 row_count=result.get('row_count'),
+                # Multi-query fields
+                query_count=result.get('query_count'),
+                query_results=result.get('query_results'),
+                total_row_count=result.get('total_row_count'),
+                successful_queries=result.get('successful_queries'),
+                failed_queries=result.get('failed_queries'),
+                operation=result.get('operation'),
+                # Common fields
                 execution_time=result.get('execution_time'),
                 explanation=result.get('explanation'),
-                metadata={
-                    "operation": result.get('operation'),
-                    "rows_affected": result.get('rows_affected'),
-                    "context": request.context,
-                    "role": request.role
-                }
+                metadata=merged_metadata
             )
         else:
+            # Include error metadata for failed requests
+            error_metadata = result.get('metadata', {})
             return SQLGenerationResponse(
                 success=False,
                 error=result.get('error'),
-                sql=result.get('sql')
+                sql=result.get('sql'),
+                metadata=error_metadata
             )
             
     except Exception as e:

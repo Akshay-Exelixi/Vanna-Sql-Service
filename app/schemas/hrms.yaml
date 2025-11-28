@@ -1,11 +1,11 @@
 # HRMS Schema Training Configuration
 # This file defines the database schema and example queries for Vanna AI training
-# Version: 1.0.0
+# Version: 1.2.0 - Added Document Management
 
 schema:
   name: hrms
-  version: "1.0.0"
-  description: "Human Resource Management System database schema for leave management"
+  version: "1.2.0"
+  description: "Human Resource Management System database schema for leave, asset, and document management"
   database_schema: public
 
 tables:
@@ -219,6 +219,185 @@ tables:
         references: permissions.id
       created_at:
         description: "When this permission was granted to the role"
+        type: timestamp
+
+  # Asset type configuration
+  - name: asset_types
+    description: "Asset type configuration - defines categories of company assets"
+    discovery: true
+    notes: |
+      - Defines asset categories like IT Equipment, Travel Assets, Office Supplies
+      - Used to categorize assets in tr_assets table
+    columns:
+      id:
+        description: "UUID primary key"
+        type: uuid
+      name:
+        description: "Asset type name (e.g., IT Equipment, Office Supplies)"
+        type: varchar
+      description:
+        description: "Description of what assets belong to this type"
+        type: text
+      created_at:
+        description: "When the asset type was created"
+        type: timestamp
+      updated_at:
+        description: "When the asset type was last updated"
+        type: timestamp
+
+  # Transaction table for assets (NOTE: prefix 'tr_' indicates transaction table)
+  - name: tr_assets
+    description: "Asset tracking and assignments - main transaction table for asset management"
+    discovery: true
+    notes: |
+      IMPORTANT: Asset records are stored in 'tr_assets' table (NOT 'assets')
+      - Status values: 'pending', 'approved', 'rejected', 'Available'
+      - assigned_to links to employees table (NULL means unassigned)
+      - Use RETURNING * for INSERT/UPDATE operations to get the affected rows
+    columns:
+      id:
+        description: "UUID primary key"
+        type: uuid
+      name:
+        description: "Asset name/description"
+        type: varchar
+      serial_number:
+        description: "Asset serial number or identifier"
+        type: varchar
+      purchase_date:
+        description: "Date asset was purchased"
+        type: date
+      purchase_cost:
+        description: "Cost of the asset in decimal format"
+        type: decimal
+      assigned_to:
+        description: "Employee who has the asset assigned (NULL if unassigned)"
+        type: uuid
+        is_foreign_key: true
+        references: employees.id
+      status:
+        description: "Current asset status"
+        type: varchar
+        allowed_values: [pending, approved, rejected, Available]
+      notes:
+        description: "Additional notes about the asset"
+        type: text
+      asset_type_id:
+        description: "Type/category of the asset"
+        type: uuid
+        is_foreign_key: true
+        references: asset_types.id
+      created_at:
+        description: "When the asset record was created"
+        type: timestamp
+      updated_at:
+        description: "When the asset record was last updated"
+        type: timestamp
+
+  # Document type configuration
+  - name: document_types
+    description: "Document type configuration - defines categories of employee documents"
+    discovery: true
+    notes: |
+      - Defines document categories like Passport, Visa, ID Card, Contract, etc.
+      - Used to categorize documents in tr_documents table
+    columns:
+      id:
+        description: "UUID primary key"
+        type: uuid
+      name:
+        description: "Document type name (e.g., Passport, Visa, Employment Contract)"
+        type: varchar
+      description:
+        description: "Description of what documents belong to this type"
+        type: text
+      created_at:
+        description: "When the document type was created"
+        type: timestamp
+      updated_at:
+        description: "When the document type was last updated"
+        type: timestamp
+
+  # Transaction table for documents (NOTE: prefix 'tr_' indicates transaction table)
+  - name: tr_documents
+    description: "Employee document management - main transaction table for document tracking"
+    discovery: true
+    notes: |
+      IMPORTANT: Document records are stored in 'tr_documents' table (NOT 'documents')
+      - Status values: 'pending', 'approved', 'rejected'
+      - employee_id links to employees table
+      - expiry_date for documents with validity period (passport, visa, etc.)
+      - notification_days_before: Days before expiry to send notification
+      - Use RETURNING * for INSERT/UPDATE operations to get the affected rows
+    columns:
+      id:
+        description: "UUID primary key"
+        type: uuid
+      employee_id:
+        description: "Employee who owns the document"
+        type: uuid
+        is_foreign_key: true
+        references: employees.id
+      name:
+        description: "Document name/title"
+        type: varchar
+      file_path:
+        description: "Path to the uploaded document file"
+        type: varchar
+      description:
+        description: "Document description or notes"
+        type: text
+      upload_date:
+        description: "When the document was uploaded"
+        type: timestamp
+      expiry_date:
+        description: "Document expiry date (for passports, visas, etc.)"
+        type: date
+      type_id:
+        description: "Type/category of the document"
+        type: uuid
+        is_foreign_key: true
+        references: document_types.id
+      notification_days_before:
+        description: "Days before expiry to send notification (default 30)"
+        type: integer
+      notifications_enabled:
+        description: "Whether expiry notifications are enabled"
+        type: boolean
+      status:
+        description: "Document approval status"
+        type: varchar
+        allowed_values: [pending, approved, rejected]
+      approved_by:
+        description: "Employee who approved the document"
+        type: uuid
+        is_foreign_key: true
+        references: employees.id
+      approved_at:
+        description: "When the document was approved"
+        type: timestamp
+      rejected_by:
+        description: "Employee who rejected the document"
+        type: uuid
+        is_foreign_key: true
+        references: employees.id
+      rejected_at:
+        description: "When the document was rejected"
+        type: timestamp
+      rejection_reason:
+        description: "Reason for document rejection"
+        type: text
+      notes:
+        description: "Additional notes about the document"
+        type: text
+      additional_data:
+        description: "JSONB field for extra document metadata"
+        type: jsonb
+      created_at:
+        description: "When the document record was created"
+        type: timestamp
+      updated_at:
+        description: "When the document record was last updated"
         type: timestamp
 
 examples:
@@ -475,6 +654,70 @@ examples:
       ORDER BY l.updated_at DESC;
     category: manager
 
+  # Time-series and trend queries
+  - question: "Show leave trend for the past 2 months"
+    sql: |
+      WITH days AS (
+        SELECT d::date AS day
+        FROM generate_series(
+          (CURRENT_DATE - INTERVAL '2 months'),
+          CURRENT_DATE,
+          INTERVAL '1 day'
+        ) AS d
+      ),
+      counts AS (
+        SELECT start_date::date AS day, COUNT(*) AS leave_count
+        FROM tr_leaves
+        WHERE start_date >= (CURRENT_DATE - INTERVAL '2 months')
+        GROUP BY start_date::date
+      )
+      SELECT d.day, COALESCE(c.leave_count, 0) AS leave_count
+      FROM days d
+      LEFT JOIN counts c USING (day)
+      ORDER BY d.day;
+    category: analytics
+    description: "Daily leave count trend over past 2 months"
+
+  - question: "Show monthly leave trends"
+    sql: |
+      SELECT 
+        DATE_TRUNC('month', start_date) AS month,
+        COUNT(*) AS total_leaves,
+        COUNT(CASE WHEN status = 'approved' THEN 1 END) AS approved,
+        COUNT(CASE WHEN status = 'pending' THEN 1 END) AS pending,
+        COUNT(CASE WHEN status = 'rejected' THEN 1 END) AS rejected
+      FROM tr_leaves
+      WHERE start_date >= (CURRENT_DATE - INTERVAL '6 months')
+      GROUP BY DATE_TRUNC('month', start_date)
+      ORDER BY month DESC;
+    category: analytics
+    description: "Monthly leave statistics for past 6 months"
+
+  - question: "Show weekly leave pattern"
+    sql: |
+      SELECT 
+        EXTRACT(DOW FROM start_date) AS day_of_week,
+        TO_CHAR(start_date, 'Day') AS day_name,
+        COUNT(*) AS leave_count
+      FROM tr_leaves
+      WHERE start_date >= (CURRENT_DATE - INTERVAL '3 months')
+      GROUP BY EXTRACT(DOW FROM start_date), TO_CHAR(start_date, 'Day')
+      ORDER BY day_of_week;
+    category: analytics
+    description: "Leave frequency by day of week"
+
+  - question: "Show leaves for last week"
+    sql: |
+      SELECT l.id, e.first_name, e.last_name, lt.name as leave_type,
+             l.start_date, l.end_date, l.days, l.status
+      FROM tr_leaves l
+      JOIN employees e ON l.employee_id = e.id
+      LEFT JOIN leave_types lt ON l.leave_type_id = lt.id
+      WHERE l.start_date >= (CURRENT_DATE - INTERVAL '1 week')
+      ORDER BY l.start_date DESC;
+    category: leaves
+    description: "All leaves starting in the past week"
+
   # Role and Permission queries
   - question: "Get all permissions for a role"
     sql: |
@@ -527,7 +770,578 @@ examples:
     category: roles
     description: "Get all permissions for a specific employee via their role"
 
+  # Asset counting and status queries
+  - question: "How many pending assets are there?"
+    sql: "SELECT COUNT(*) as pending_count FROM tr_assets WHERE status = 'pending';"
+    category: assets
+    description: "Count pending asset requests"
+
+  - question: "How many assets were approved this month?"
+    sql: |
+      SELECT COUNT(*) as approved_count 
+      FROM tr_assets 
+      WHERE status = 'approved' 
+      AND EXTRACT(MONTH FROM created_at) = EXTRACT(MONTH FROM CURRENT_DATE)
+      AND EXTRACT(YEAR FROM created_at) = EXTRACT(YEAR FROM CURRENT_DATE);
+    category: analytics
+
+  - question: "Count assets by status"
+    sql: "SELECT status, COUNT(*) as count FROM tr_assets GROUP BY status ORDER BY count DESC;"
+    category: analytics
+
+  - question: "Count assets by type"
+    sql: |
+      SELECT at.name as asset_type, COUNT(a.id) as count
+      FROM asset_types at
+      LEFT JOIN tr_assets a ON at.id = a.asset_type_id
+      GROUP BY at.id, at.name
+      ORDER BY count DESC;
+    category: analytics
+
+  # Asset listing queries
+  - question: "Show all pending asset requests"
+    sql: |
+      SELECT a.id, e.first_name, e.last_name, at.name as asset_type, 
+             a.name, a.serial_number, a.status, a.notes
+      FROM tr_assets a
+      LEFT JOIN employees e ON a.assigned_to = e.id
+      LEFT JOIN asset_types at ON a.asset_type_id = at.id
+      WHERE a.status = 'pending'
+      ORDER BY a.created_at DESC;
+    category: assets
+    description: "List all pending asset requests with employee details"
+
+  - question: "Show approved assets this month"
+    sql: |
+      SELECT a.id, e.first_name, e.last_name, at.name as asset_type,
+             a.name, a.serial_number, a.purchase_cost
+      FROM tr_assets a
+      LEFT JOIN employees e ON a.assigned_to = e.id
+      LEFT JOIN asset_types at ON a.asset_type_id = at.id
+      WHERE a.status = 'approved'
+      AND EXTRACT(MONTH FROM a.updated_at) = EXTRACT(MONTH FROM CURRENT_DATE)
+      ORDER BY a.updated_at DESC;
+    category: assets
+
+  - question: "Show assets for a specific employee"
+    sql: |
+      SELECT a.id, at.name as asset_type, a.name, a.serial_number,
+             a.purchase_date, a.purchase_cost, a.status, a.notes
+      FROM tr_assets a
+      LEFT JOIN asset_types at ON a.asset_type_id = at.id
+      WHERE a.assigned_to = $1::uuid
+      ORDER BY a.created_at DESC;
+    category: assets
+    description: "Get all assets assigned to a specific employee by ID"
+
+  - question: "Show all available assets"
+    sql: |
+      SELECT a.id, at.name as asset_type, a.name, a.serial_number,
+             a.purchase_date, a.purchase_cost
+      FROM tr_assets a
+      LEFT JOIN asset_types at ON a.asset_type_id = at.id
+      WHERE a.assigned_to IS NULL AND a.status = 'approved'
+      ORDER BY at.name, a.name;
+    category: assets
+    description: "List all unassigned/available assets"
+
+  # Asset value analytics
+  - question: "Get total asset value by type"
+    sql: |
+      SELECT at.name as asset_type,
+        COUNT(a.id) as asset_count,
+        SUM(a.purchase_cost) as total_value,
+        AVG(a.purchase_cost) as avg_value
+      FROM asset_types at
+      LEFT JOIN tr_assets a ON at.id = a.asset_type_id AND a.status = 'approved'
+      GROUP BY at.id, at.name
+      ORDER BY total_value DESC NULLS LAST;
+    category: analytics
+    description: "Calculate total and average value per asset type"
+
+  - question: "Get total asset value by department"
+    sql: |
+      SELECT d.name as department,
+        COUNT(a.id) as asset_count,
+        SUM(a.purchase_cost) as total_value
+      FROM departments d
+      LEFT JOIN employees e ON d.id = e.department_id
+      LEFT JOIN tr_assets a ON e.id = a.assigned_to AND a.status = 'approved'
+      GROUP BY d.id, d.name
+      ORDER BY total_value DESC NULLS LAST;
+    category: analytics
+
+  # Asset insert/update operations
+  - question: "Insert a new asset request"
+    sql: |
+      INSERT INTO tr_assets (name, serial_number, purchase_date, purchase_cost, assigned_to, status, asset_type_id, notes)
+      VALUES ($1, $2, $3::date, $4::decimal, $5::uuid, 'pending', $6::uuid, $7)
+      RETURNING *;
+    category: write
+    description: "Create new asset request"
+
+  - question: "Approve an asset request"
+    sql: |
+      UPDATE tr_assets 
+      SET status = 'approved', updated_at = CURRENT_TIMESTAMP 
+      WHERE id = $1::uuid AND status = 'pending'
+      RETURNING *;
+    category: write
+    description: "Approve a pending asset request"
+
+  - question: "Reject an asset request"
+    sql: |
+      UPDATE tr_assets 
+      SET status = 'rejected', updated_at = CURRENT_TIMESTAMP 
+      WHERE id = $1::uuid AND status = 'pending'
+      RETURNING *;
+    category: write
+
+  - question: "Assign asset to employee"
+    sql: |
+      UPDATE tr_assets 
+      SET assigned_to = $2::uuid, status = 'approved', updated_at = CURRENT_TIMESTAMP 
+      WHERE id = $1::uuid
+      RETURNING *;
+    category: write
+    description: "Assign an asset to an employee"
+
+  - question: "Return asset"
+    sql: |
+      UPDATE tr_assets 
+      SET assigned_to = NULL, status = 'Available', updated_at = CURRENT_TIMESTAMP 
+      WHERE id = $1::uuid
+      RETURNING *;
+    category: write
+    description: "Mark an asset as returned/unassigned"
+
+  # User-specific asset queries (use $CURRENT_USER_ID placeholder)
+  - question: "Show my assets"
+    sql: |
+      SELECT a.id, at.name as asset_type, a.name, a.serial_number,
+             a.purchase_date, a.status, a.notes, a.created_at
+      FROM tr_assets a
+      LEFT JOIN asset_types at ON a.asset_type_id = at.id
+      WHERE a.assigned_to = $CURRENT_USER_ID::uuid
+      ORDER BY a.created_at DESC;
+    category: user_specific
+    description: "Get current user's assigned assets"
+
+  - question: "Show my pending asset requests"
+    sql: |
+      SELECT a.id, at.name as asset_type, a.name, a.serial_number,
+             a.status, a.notes, a.created_at
+      FROM tr_assets a
+      LEFT JOIN asset_types at ON a.asset_type_id = at.id
+      WHERE a.assigned_to = $CURRENT_USER_ID::uuid
+      AND a.status = 'pending'
+      ORDER BY a.created_at DESC;
+    category: user_specific
+    description: "Get current user's pending asset requests"
+
+  - question: "How many assets do I have?"
+    sql: |
+      SELECT COUNT(*) as my_asset_count 
+      FROM tr_assets 
+      WHERE assigned_to = $CURRENT_USER_ID::uuid 
+      AND status = 'approved';
+    category: user_specific
+
+  # Manager-specific asset queries
+  - question: "Show my team's assets"
+    sql: |
+      SELECT a.id, e.first_name, e.last_name, at.name as asset_type,
+             a.name, a.serial_number, a.status
+      FROM tr_assets a
+      JOIN employees e ON a.assigned_to = e.id
+      LEFT JOIN asset_types at ON a.asset_type_id = at.id
+      WHERE e.manager_id = $CURRENT_USER_ID::uuid
+      ORDER BY e.last_name, a.created_at DESC;
+    category: manager
+    description: "Get assets assigned to direct reports"
+
+  - question: "Show pending asset requests I need to approve"
+    sql: |
+      SELECT a.id, e.first_name, e.last_name, at.name as asset_type,
+             a.name, a.notes, a.created_at
+      FROM tr_assets a
+      JOIN employees e ON a.assigned_to = e.id
+      LEFT JOIN asset_types at ON a.asset_type_id = at.id
+      WHERE e.manager_id = $CURRENT_USER_ID::uuid
+      AND a.status = 'pending'
+      ORDER BY a.created_at DESC;
+    category: manager
+    description: "Get pending asset requests from direct reports"
+
+  - question: "Get team asset value summary"
+    sql: |
+      SELECT 
+        COUNT(a.id) as total_assets,
+        SUM(a.purchase_cost) as total_value,
+        COUNT(CASE WHEN a.status = 'pending' THEN 1 END) as pending_requests
+      FROM tr_assets a
+      JOIN employees e ON a.assigned_to = e.id
+      WHERE e.manager_id = $CURRENT_USER_ID::uuid;
+    category: manager
+    description: "Summary of team's asset values and pending requests"
+
+  # Asset type queries
+  - question: "List all asset types"
+    sql: |
+      SELECT id, name, description 
+      FROM asset_types 
+      ORDER BY name;
+    category: assets
+    description: "Get all available asset types"
+
+  - question: "Get assets by type"
+    sql: |
+      SELECT a.id, a.name, a.serial_number, a.status,
+             e.first_name, e.last_name
+      FROM tr_assets a
+      LEFT JOIN employees e ON a.assigned_to = e.id
+      WHERE a.asset_type_id = $1::uuid
+      ORDER BY a.status, a.name;
+    category: assets
+    description: "Get all assets of a specific type"
+
+  # Document counting and status queries
+  - question: "How many pending documents are there?"
+    sql: "SELECT COUNT(*) as pending_count FROM tr_documents WHERE status = 'pending';"
+    category: documents
+    description: "Count pending document approvals"
+
+  - question: "How many documents were approved this month?"
+    sql: |
+      SELECT COUNT(*) as approved_count 
+      FROM tr_documents 
+      WHERE status = 'approved' 
+      AND EXTRACT(MONTH FROM approved_at) = EXTRACT(MONTH FROM CURRENT_DATE)
+      AND EXTRACT(YEAR FROM approved_at) = EXTRACT(YEAR FROM CURRENT_DATE);
+    category: analytics
+
+  - question: "Count documents by status"
+    sql: "SELECT status, COUNT(*) as count FROM tr_documents GROUP BY status ORDER BY count DESC;"
+    category: analytics
+
+  - question: "Count documents by type"
+    sql: |
+      SELECT dt.name as document_type, COUNT(d.id) as count
+      FROM document_types dt
+      LEFT JOIN tr_documents d ON dt.id = d.type_id
+      GROUP BY dt.id, dt.name
+      ORDER BY count DESC;
+    category: analytics
+
+  # Document listing queries
+  - question: "Show all pending document approvals"
+    sql: |
+      SELECT d.id, e.first_name, e.last_name, dt.name as document_type, 
+             d.name, d.file_path, d.status, d.upload_date, d.notes
+      FROM tr_documents d
+      JOIN employees e ON d.employee_id = e.id
+      LEFT JOIN document_types dt ON d.type_id = dt.id
+      WHERE d.status = 'pending'
+      ORDER BY d.upload_date DESC;
+    category: documents
+    description: "List all pending document approvals with employee details"
+
+  - question: "Show approved documents this month"
+    sql: |
+      SELECT d.id, e.first_name, e.last_name, dt.name as document_type,
+             d.name, d.approved_at, d.expiry_date
+      FROM tr_documents d
+      JOIN employees e ON d.employee_id = e.id
+      LEFT JOIN document_types dt ON d.type_id = dt.id
+      WHERE d.status = 'approved'
+      AND EXTRACT(MONTH FROM d.approved_at) = EXTRACT(MONTH FROM CURRENT_DATE)
+      ORDER BY d.approved_at DESC;
+    category: documents
+
+  - question: "Show documents for a specific employee"
+    sql: |
+      SELECT d.id, dt.name as document_type, d.name, d.file_path,
+             d.upload_date, d.expiry_date, d.status, d.notes
+      FROM tr_documents d
+      LEFT JOIN document_types dt ON d.type_id = dt.id
+      WHERE d.employee_id = $1::uuid
+      ORDER BY d.upload_date DESC;
+    category: documents
+    description: "Get all documents for a specific employee by ID"
+
+  - question: "Show documents expiring soon"
+    sql: |
+      SELECT d.id, e.first_name, e.last_name, dt.name as document_type,
+             d.name, d.expiry_date,
+             (d.expiry_date - CURRENT_DATE) as days_until_expiry
+      FROM tr_documents d
+      JOIN employees e ON d.employee_id = e.id
+      LEFT JOIN document_types dt ON d.type_id = dt.id
+      WHERE d.expiry_date IS NOT NULL
+      AND d.expiry_date <= (CURRENT_DATE + INTERVAL '30 days')
+      AND d.expiry_date >= CURRENT_DATE
+      AND d.status = 'approved'
+      ORDER BY d.expiry_date ASC;
+    category: documents
+    description: "List documents expiring in the next 30 days"
+
+  - question: "Show expired documents"
+    sql: |
+      SELECT d.id, e.first_name, e.last_name, dt.name as document_type,
+             d.name, d.expiry_date,
+             (CURRENT_DATE - d.expiry_date) as days_expired
+      FROM tr_documents d
+      JOIN employees e ON d.employee_id = e.id
+      LEFT JOIN document_types dt ON d.type_id = dt.id
+      WHERE d.expiry_date IS NOT NULL
+      AND d.expiry_date < CURRENT_DATE
+      AND d.status = 'approved'
+      ORDER BY d.expiry_date DESC;
+    category: documents
+    description: "List all expired documents"
+
+  # Document insert/update operations
+  - question: "Insert a new document"
+    sql: |
+      INSERT INTO tr_documents (employee_id, name, file_path, description, type_id, expiry_date, status, notes)
+      VALUES ($1::uuid, $2, $3, $4, $5::uuid, $6::date, 'pending', $7)
+      RETURNING *;
+    category: write
+    description: "Create new document record"
+
+  - question: "Approve a document"
+    sql: |
+      UPDATE tr_documents 
+      SET status = 'approved', approved_by = $2::uuid, approved_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP 
+      WHERE id = $1::uuid AND status = 'pending'
+      RETURNING *;
+    category: write
+    description: "Approve a pending document"
+
+  - question: "Reject a document"
+    sql: |
+      UPDATE tr_documents 
+      SET status = 'rejected', rejected_by = $2::uuid, rejected_at = CURRENT_TIMESTAMP, 
+          rejection_reason = $3, updated_at = CURRENT_TIMESTAMP 
+      WHERE id = $1::uuid AND status = 'pending'
+      RETURNING *;
+    category: write
+    description: "Reject a pending document with reason"
+
+  - question: "Update document expiry date"
+    sql: |
+      UPDATE tr_documents 
+      SET expiry_date = $2::date, updated_at = CURRENT_TIMESTAMP 
+      WHERE id = $1::uuid
+      RETURNING *;
+    category: write
+    description: "Update document expiry date"
+
+  # User-specific document queries (use $CURRENT_USER_ID placeholder)
+  - question: "Show my documents"
+    sql: |
+      SELECT d.id, dt.name as document_type, d.name, d.file_path,
+             d.upload_date, d.expiry_date, d.status, d.notes
+      FROM tr_documents d
+      LEFT JOIN document_types dt ON d.type_id = dt.id
+      WHERE d.employee_id = $CURRENT_USER_ID::uuid
+      ORDER BY d.upload_date DESC;
+    category: user_specific
+    description: "Get current user's documents"
+
+  - question: "Show my pending documents"
+    sql: |
+      SELECT d.id, dt.name as document_type, d.name, d.file_path,
+             d.status, d.notes, d.upload_date
+      FROM tr_documents d
+      LEFT JOIN document_types dt ON d.type_id = dt.id
+      WHERE d.employee_id = $CURRENT_USER_ID::uuid
+      AND d.status = 'pending'
+      ORDER BY d.upload_date DESC;
+    category: user_specific
+    description: "Get current user's pending documents"
+
+  - question: "Show my expiring documents"
+    sql: |
+      SELECT d.id, dt.name as document_type, d.name, d.expiry_date,
+             (d.expiry_date - CURRENT_DATE) as days_until_expiry
+      FROM tr_documents d
+      LEFT JOIN document_types dt ON d.type_id = dt.id
+      WHERE d.employee_id = $CURRENT_USER_ID::uuid
+      AND d.expiry_date IS NOT NULL
+      AND d.expiry_date <= (CURRENT_DATE + INTERVAL '30 days')
+      AND d.expiry_date >= CURRENT_DATE
+      AND d.status = 'approved'
+      ORDER BY d.expiry_date ASC;
+    category: user_specific
+    description: "Get current user's documents expiring soon"
+
+  - question: "How many documents do I have?"
+    sql: |
+      SELECT COUNT(*) as my_document_count 
+      FROM tr_documents 
+      WHERE employee_id = $CURRENT_USER_ID::uuid;
+    category: user_specific
+
+  # Manager-specific document queries
+  - question: "Show my team's documents"
+    sql: |
+      SELECT d.id, e.first_name, e.last_name, dt.name as document_type,
+             d.name, d.expiry_date, d.status
+      FROM tr_documents d
+      JOIN employees e ON d.employee_id = e.id
+      LEFT JOIN document_types dt ON d.type_id = dt.id
+      WHERE e.manager_id = $CURRENT_USER_ID::uuid
+      ORDER BY e.last_name, d.upload_date DESC;
+    category: manager
+    description: "Get documents for direct reports"
+
+  - question: "Show pending documents I need to approve"
+    sql: |
+      SELECT d.id, e.first_name, e.last_name, dt.name as document_type,
+             d.name, d.notes, d.upload_date
+      FROM tr_documents d
+      JOIN employees e ON d.employee_id = e.id
+      LEFT JOIN document_types dt ON d.type_id = dt.id
+      WHERE e.manager_id = $CURRENT_USER_ID::uuid
+      AND d.status = 'pending'
+      ORDER BY d.upload_date DESC;
+    category: manager
+    description: "Get pending document approvals from direct reports"
+
+  - question: "Show my team's expiring documents"
+    sql: |
+      SELECT d.id, e.first_name, e.last_name, dt.name as document_type,
+             d.name, d.expiry_date,
+             (d.expiry_date - CURRENT_DATE) as days_until_expiry
+      FROM tr_documents d
+      JOIN employees e ON d.employee_id = e.id
+      LEFT JOIN document_types dt ON d.type_id = dt.id
+      WHERE e.manager_id = $CURRENT_USER_ID::uuid
+      AND d.expiry_date IS NOT NULL
+      AND d.expiry_date <= (CURRENT_DATE + INTERVAL '30 days')
+      AND d.expiry_date >= CURRENT_DATE
+      AND d.status = 'approved'
+      ORDER BY d.expiry_date ASC;
+    category: manager
+    description: "Get team documents expiring in next 30 days"
+
+  - question: "Show documents I have approved"
+    sql: |
+      SELECT d.id, e.first_name, e.last_name, dt.name as document_type,
+             d.name, d.approved_at
+      FROM tr_documents d
+      JOIN employees e ON d.employee_id = e.id
+      LEFT JOIN document_types dt ON d.type_id = dt.id
+      WHERE d.approved_by = $CURRENT_USER_ID::uuid
+      ORDER BY d.approved_at DESC;
+    category: manager
+
+  # Document analytics
+  - question: "Get document summary by department"
+    sql: |
+      SELECT dep.name as department,
+        COUNT(CASE WHEN d.status = 'pending' THEN 1 END) as pending,
+        COUNT(CASE WHEN d.status = 'approved' THEN 1 END) as approved,
+        COUNT(CASE WHEN d.status = 'rejected' THEN 1 END) as rejected,
+        COUNT(CASE WHEN d.expiry_date < CURRENT_DATE THEN 1 END) as expired
+      FROM departments dep
+      LEFT JOIN employees e ON dep.id = e.department_id
+      LEFT JOIN tr_documents d ON e.id = d.employee_id
+      GROUP BY dep.id, dep.name
+      ORDER BY dep.name;
+    category: analytics
+    description: "Document statistics by department"
+
+  - question: "Get expiring documents count by department"
+    sql: |
+      SELECT dep.name as department,
+        COUNT(d.id) as expiring_documents
+      FROM departments dep
+      LEFT JOIN employees e ON dep.id = e.department_id
+      LEFT JOIN tr_documents d ON e.id = d.employee_id
+        AND d.expiry_date IS NOT NULL
+        AND d.expiry_date <= (CURRENT_DATE + INTERVAL '30 days')
+        AND d.expiry_date >= CURRENT_DATE
+        AND d.status = 'approved'
+      GROUP BY dep.id, dep.name
+      ORDER BY expiring_documents DESC;
+    category: analytics
+
+  # Document type queries
+  - question: "List all document types"
+    sql: |
+      SELECT id, name, description 
+      FROM document_types 
+      ORDER BY name;
+    category: documents
+    description: "Get all available document types"
+
+  - question: "Get documents by type"
+    sql: |
+      SELECT d.id, d.name, d.expiry_date, d.status,
+             e.first_name, e.last_name
+      FROM tr_documents d
+      JOIN employees e ON d.employee_id = e.id
+      WHERE d.type_id = $1::uuid
+      ORDER BY d.status, d.upload_date DESC;
+    category: documents
+    description: "Get all documents of a specific type"
+
+  - question: "Get document compliance report"
+    sql: |
+      SELECT 
+        dt.name as document_type,
+        COUNT(d.id) as total_documents,
+        COUNT(CASE WHEN d.status = 'approved' AND (d.expiry_date IS NULL OR d.expiry_date >= CURRENT_DATE) THEN 1 END) as valid_documents,
+        COUNT(CASE WHEN d.expiry_date < CURRENT_DATE THEN 1 END) as expired_documents,
+        COUNT(CASE WHEN d.status = 'pending' THEN 1 END) as pending_documents
+      FROM document_types dt
+      LEFT JOIN tr_documents d ON dt.id = d.type_id
+      GROUP BY dt.id, dt.name
+      ORDER BY dt.name;
+    category: analytics
+    description: "Document compliance summary by type"
+
 documentation:
+  - topic: "CRITICAL TABLE NAMING RULES"
+    content: |
+      ⚠️ CRITICAL - READ THIS FIRST ⚠️
+      
+      The following table names DO NOT EXIST and must NEVER be used:
+      - ❌ leave_requests (WRONG) → ✅ Use 'tr_leaves' instead
+      - ❌ leaves (WRONG) → ✅ Use 'tr_leaves' instead  
+      - ❌ leave_applications (WRONG) → ✅ Use 'tr_leaves' instead
+      - ❌ time_off (WRONG) → ✅ Use 'tr_leaves' instead
+      - ❌ pto_requests (WRONG) → ✅ Use 'tr_leaves' instead
+      - ❌ assets (WRONG) → ✅ Use 'tr_assets' instead
+      - ❌ asset_requests (WRONG) → ✅ Use 'tr_assets' instead
+      - ❌ equipment (WRONG) → ✅ Use 'tr_assets' instead
+      - ❌ documents (WRONG) → ✅ Use 'tr_documents' instead
+      - ❌ employee_documents (WRONG) → ✅ Use 'tr_documents' instead
+      - ❌ files (WRONG) → ✅ Use 'tr_documents' instead
+      
+      The 'tr_' prefix indicates a TRANSACTION table.
+      
+      CORRECT TABLE NAMES:
+      - tr_leaves: Leave requests and approvals (THE ONLY leave table)
+      - tr_assets: Asset assignments and tracking (THE ONLY asset table)
+      - tr_documents: Employee document management (THE ONLY document table)
+      - asset_types: Asset type/category definitions
+      - document_types: Document type/category definitions
+      - employees: Employee master data
+      - roles: Role definitions
+      - leave_types: Types of leaves (sick, vacation, etc.)
+      - departments: Organization departments
+      - permissions: Permission definitions
+      - tr_role_permissions: Role-to-permission mappings
+      - employees: Employee master data
+      - roles: Role definitions
+      - leave_types: Types of leaves (sick, vacation, etc.)
+      - departments: Organization departments
+      - permissions: Permission definitions
+      - tr_role_permissions: Role-to-permission mappings
+
   - topic: "Schema Overview"
     content: |
       HRMS Database Schema Overview:
@@ -666,3 +1480,45 @@ relationships:
     to_column: id
     relationship_type: many-to-one
     description: "Each role-permission mapping references one permission"
+
+  - from_table: tr_assets
+    to_table: employees
+    from_column: assigned_to
+    to_column: id
+    relationship_type: many-to-one
+    description: "Each asset can be assigned to one employee"
+
+  - from_table: tr_assets
+    to_table: asset_types
+    from_column: asset_type_id
+    to_column: id
+    relationship_type: many-to-one
+    description: "Each asset belongs to one asset type"
+
+  - from_table: tr_documents
+    to_table: employees
+    from_column: employee_id
+    to_column: id
+    relationship_type: many-to-one
+    description: "Each document belongs to one employee"
+
+  - from_table: tr_documents
+    to_table: document_types
+    from_column: type_id
+    to_column: id
+    relationship_type: many-to-one
+    description: "Each document has one document type"
+
+  - from_table: tr_documents
+    to_table: employees
+    from_column: approved_by
+    to_column: id
+    relationship_type: many-to-one
+    description: "Each document can be approved by one employee"
+
+  - from_table: tr_documents
+    to_table: employees
+    from_column: rejected_by
+    to_column: id
+    relationship_type: many-to-one
+    description: "Each document can be rejected by one employee"

@@ -19,6 +19,7 @@ from vanna.core.user.models import User
 
 from ..config import settings
 from ..database import db_manager
+from .sql_validator import SQLSecurityValidator, ValidationResult
 
 logger = logging.getLogger(__name__)
 
@@ -201,6 +202,7 @@ class VannaSQLService:
         self.user_resolver = None  # Store user resolver for training
         self.initialized = False
         self.trained_tables = set()
+        self.security_validator = SQLSecurityValidator(settings)  # SQL security validator
     
     async def initialize(self):
         """Initialize Vanna 2.0 Agent with Qdrant memory and OpenAI LLM"""
@@ -700,9 +702,45 @@ Replace $CURRENT_USER_ID placeholder with '{user.id}' in generated SQL.
 """
             
             # Create prompt for SQL generation with user context
-            prompt = f"""You are a SQL expert. Generate a PostgreSQL query to answer the following question.
+            prompt = f"""You are a SQL expert for an HRMS (Human Resource Management System) database. Generate a PostgreSQL query to answer the following question.
 
-Use the schema information and examples from the context below. Pay close attention to the correct table names and column types.
+⚠️ CRITICAL TABLE NAMING RULES - READ FIRST ⚠️
+The following table names DO NOT EXIST and must NEVER be used:
+- ❌ leave_requests → ✅ Use 'tr_leaves' instead
+- ❌ leaves → ✅ Use 'tr_leaves' instead
+- ❌ leave_applications → ✅ Use 'tr_leaves' instead
+- ❌ time_off → ✅ Use 'tr_leaves' instead
+- ❌ pto_requests → ✅ Use 'tr_leaves' instead
+
+CORRECT TABLE NAMES (use ONLY these):
+- tr_leaves: Leave requests and approvals (THE ONLY table for leave data)
+- employees: Employee master data
+- roles: Role definitions  
+- leave_types: Types of leaves (sick, vacation, etc.)
+- departments: Organization departments
+- permissions: Permission definitions
+- tr_role_permissions: Role-to-permission mappings
+
+The 'tr_' prefix indicates a TRANSACTION table.
+
+⚠️ CRITICAL RULES FOR MULTIPLE SQL STATEMENTS ⚠️
+If the question requires multiple queries (e.g., "show X and also Y"):
+1. Each SQL statement MUST be completely self-contained and independent
+2. DO NOT define a CTE (WITH clause) in one statement and reference it in another
+3. Each statement must include its own WITH clause if it needs a CTE
+4. Statements are executed separately - they cannot share CTEs or temporary tables
+
+Example of WRONG approach:
+```
+WITH data AS (SELECT ...) SELECT ... FROM data;  -- Statement 1 defines CTE
+SELECT ... FROM data;  -- Statement 2 FAILS - 'data' doesn't exist here!
+```
+
+Example of CORRECT approach:
+```
+WITH data AS (SELECT ...) SELECT ... FROM data;  -- Statement 1 with its own CTE
+WITH data AS (SELECT ...) SELECT ... FROM data;  -- Statement 2 with its own CTE (duplicated)
+```
 {user_context_info}
 
 Context (DDL, Examples, and Documentation):
@@ -710,8 +748,9 @@ Context (DDL, Examples, and Documentation):
 
 Question: {question}
 
-Generate ONLY the SQL query, no explanations. Use the exact table and column names from the context. 
-If the question is user-specific (contains "my", "I"), apply appropriate WHERE filters based on the current user context."""
+Generate ONLY the SQL query, no explanations. Use ONLY the exact table names listed above.
+If the question is user-specific (contains "my", "I"), apply appropriate WHERE filters based on the current user context.
+If generating multiple statements, ensure each is completely self-contained."""
             
             # Use agent to generate SQL - collect all UI components
             logger.info("🤖 Sending message to Vanna Agent...")
@@ -786,7 +825,7 @@ If the question is user-specific (contains "my", "I"), apply appropriate WHERE f
             
             execution_time = time.time() - start_time
             
-            # Validate and sanitize SQL
+            # Validate and sanitize SQL (basic validation)
             validation = self._validate_sql(sql)
             if not validation['valid']:
                 logger.warning(f"❌ SQL validation failed: {validation['error']}")
@@ -802,13 +841,53 @@ If the question is user-specific (contains "my", "I"), apply appropriate WHERE f
                     }
                 }
             
-            logger.info(f"✅ SQL generated in {execution_time:.2f}s")
+            # Security validation (role-based access, injection detection, placeholder replacement)
+            user_metadata = user.metadata if user else {}
+            security_result = self.security_validator.validate(
+                sql=sql,
+                user_id=user_id,
+                role=user_metadata.get('role_name', role),
+                user_metadata=user_metadata
+            )
+            
+            # Check for security errors (hard failures)
+            if not security_result.is_valid:
+                logger.warning(f"❌ Security validation failed: {security_result.errors}")
+                return {
+                    "success": False,
+                    "error": f"Security validation failed: {'; '.join(security_result.errors)}",
+                    "sql": sql,
+                    "metadata": {
+                        "security_validated": False,
+                        "role_level": security_result.role_level,
+                        "validation_errors": security_result.errors
+                    }
+                }
+            
+            # Use the potentially modified SQL (with placeholders replaced)
+            validated_sql = security_result.sql
+            
+            # Log any security warnings
+            if security_result.warnings:
+                logger.info(f"⚠️ Security warnings: {security_result.warnings}")
+            
+            # Log any modifications made
+            if security_result.modifications:
+                logger.info(f"🔧 SQL modifications: {security_result.modifications}")
+            
+            logger.info(f"✅ SQL generated and validated in {execution_time:.2f}s")
             
             return {
                 "success": True,
-                "sql": sql,
+                "sql": validated_sql,
                 "execution_time": execution_time,
-                "explanation": f"Generated SQL for: {question}"
+                "explanation": f"Generated SQL for: {question}",
+                "metadata": {
+                    "security_validated": True,
+                    "role_level": security_result.role_level,
+                    "validation_warnings": security_result.warnings,
+                    "modifications": security_result.modifications
+                }
             }
             
         except Exception as e:
@@ -835,6 +914,53 @@ If the question is user-specific (contains "my", "I"), apply appropriate WHERE f
         
         return sql.strip()
     
+    def _split_sql_statements(self, sql: str) -> List[str]:
+        """
+        Split SQL string into individual statements.
+        Handles semicolons inside strings properly.
+        Strips leading comments from each statement.
+        """
+        statements = []
+        current_statement = ""
+        in_string = False
+        string_char = None
+        
+        i = 0
+        while i < len(sql):
+            char = sql[i]
+            
+            # Handle string boundaries
+            if char in ("'", '"') and (i == 0 or sql[i-1] != '\\'):
+                if not in_string:
+                    in_string = True
+                    string_char = char
+                elif char == string_char:
+                    in_string = False
+                    string_char = None
+            
+            # Split on semicolon if not in string
+            if char == ';' and not in_string:
+                stmt = current_statement.strip()
+                if stmt:
+                    # Check if statement has actual SQL (not just comments)
+                    stripped = self._strip_sql_comments(stmt)
+                    if stripped:
+                        statements.append(stmt)  # Keep original with comments for context
+                current_statement = ""
+            else:
+                current_statement += char
+            
+            i += 1
+        
+        # Don't forget the last statement (may not have trailing semicolon)
+        stmt = current_statement.strip()
+        if stmt:
+            stripped = self._strip_sql_comments(stmt)
+            if stripped:
+                statements.append(stmt)
+        
+        return statements
+    
     async def generate_and_execute_sql(
         self,
         question: str,
@@ -843,7 +969,7 @@ If the question is user-specific (contains "my", "I"), apply appropriate WHERE f
         user_id: Optional[str] = None,
         max_rows: Optional[int] = None
     ) -> Dict[str, Any]:
-        """Generate SQL and execute it with user context"""
+        """Generate SQL and execute it with user context. Supports multiple SQL statements."""
         
         # Generate SQL with user context
         result = await self.generate_sql(question, context, role, user_id)
@@ -853,6 +979,22 @@ If the question is user-specific (contains "my", "I"), apply appropriate WHERE f
         
         sql = result['sql']
         
+        # Split into multiple statements if present
+        sql_statements = self._split_sql_statements(sql)
+        
+        logger.info(f"📋 SQL contains {len(sql_statements)} statement(s)")
+        
+        # If multiple statements, execute each separately
+        if len(sql_statements) > 1:
+            return await self._execute_multiple_statements(
+                sql_statements=sql_statements,
+                original_sql=sql,
+                generation_time=result.get('execution_time', 0),
+                max_rows=max_rows,
+                metadata=result.get('metadata')
+            )
+        
+        # Single statement execution (original logic)
         # Determine operation type
         operation_type = self._get_operation_type(sql)
         
@@ -875,7 +1017,8 @@ If the question is user-specific (contains "my", "I"), apply appropriate WHERE f
                     "row_count": len(rows),
                     "execution_time": result['execution_time'] + execution_time,
                     "operation": "read",
-                    "explanation": result.get('explanation')
+                    "explanation": result.get('explanation'),
+                    "metadata": result.get('metadata')
                 }
                 
             elif operation_type in ['INSERT', 'UPDATE', 'DELETE']:
@@ -890,7 +1033,8 @@ If the question is user-specific (contains "my", "I"), apply appropriate WHERE f
                     "returning": write_result.get('returning', []),
                     "execution_time": result['execution_time'] + execution_time,
                     "operation": "write",
-                    "explanation": result.get('explanation')
+                    "explanation": result.get('explanation'),
+                    "metadata": result.get('metadata')
                 }
             else:
                 return {
@@ -905,6 +1049,72 @@ If the question is user-specific (contains "my", "I"), apply appropriate WHERE f
                 "success": False,
                 "sql": sql,
                 "error": f"Execution error: {str(e)}"
+            }
+    
+    async def _execute_multiple_statements(
+        self,
+        sql_statements: List[str],
+        original_sql: str,
+        generation_time: float,
+        max_rows: Optional[int] = None,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Execute multiple SQL statements and return combined results.
+        
+        Args:
+            sql_statements: List of individual SQL statements
+            original_sql: Original combined SQL string
+            generation_time: Time taken to generate SQL
+            max_rows: Maximum rows per query
+            metadata: Security metadata from generation
+            
+        Returns:
+            Combined results with query_results array
+        """
+        try:
+            start_time = time.time()
+            
+            # Execute all statements
+            query_results = await db_manager.execute_multiple_queries(
+                sql_statements,
+                max_rows=max_rows or settings.MAX_QUERY_RESULTS
+            )
+            
+            execution_time = time.time() - start_time
+            
+            # Calculate totals
+            total_rows = sum(qr.get('row_count', 0) for qr in query_results)
+            successful_queries = sum(1 for qr in query_results if qr.get('success'))
+            failed_queries = len(query_results) - successful_queries
+            
+            logger.info(
+                f"✅ Executed {len(query_results)} queries: "
+                f"{successful_queries} succeeded, {failed_queries} failed, "
+                f"{total_rows} total rows"
+            )
+            
+            return {
+                "success": failed_queries == 0,
+                "sql": original_sql,
+                "query_count": len(query_results),
+                "query_results": query_results,
+                "total_row_count": total_rows,
+                "successful_queries": successful_queries,
+                "failed_queries": failed_queries,
+                "execution_time": generation_time + execution_time,
+                "operation": "multi_read",
+                "explanation": f"Executed {len(query_results)} SQL statements",
+                "metadata": metadata
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Multiple statement execution failed: {e}")
+            return {
+                "success": False,
+                "sql": original_sql,
+                "error": f"Execution error: {str(e)}",
+                "metadata": metadata
             }
     
     def _validate_sql(self, sql: str) -> Dict[str, Any]:
@@ -935,9 +1145,35 @@ If the question is user-specific (contains "my", "I"), apply appropriate WHERE f
         
         return {"valid": True}
     
+    def _strip_sql_comments(self, sql: str) -> str:
+        """
+        Strip SQL comments from the beginning of SQL statements.
+        Handles both single-line (--) and multi-line (/* */) comments.
+        """
+        sql = sql.strip()
+        
+        while sql:
+            # Skip single-line comments
+            if sql.startswith('--'):
+                newline_idx = sql.find('\n')
+                if newline_idx == -1:
+                    return ''  # Entire SQL is a comment
+                sql = sql[newline_idx + 1:].strip()
+            # Skip multi-line comments
+            elif sql.startswith('/*'):
+                end_idx = sql.find('*/')
+                if end_idx == -1:
+                    return ''  # Unclosed comment
+                sql = sql[end_idx + 2:].strip()
+            else:
+                break
+        
+        return sql
+    
     def _get_operation_type(self, sql: str) -> str:
-        """Extract operation type from SQL"""
-        sql_clean = sql.strip().upper()
+        """Extract operation type from SQL, ignoring leading comments"""
+        # Strip comments before checking operation type
+        sql_clean = self._strip_sql_comments(sql).upper()
         
         if sql_clean.startswith('SELECT') or sql_clean.startswith('WITH'):
             return 'SELECT'
